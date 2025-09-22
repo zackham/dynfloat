@@ -122,10 +122,12 @@ elif [ ${#HIDDEN_WINDOWS[@]} -gt 0 ]; then
         hyprctl dispatch movetoworkspace "$CURRENT_WS,address:$addr"
     done
     
-    # Focus the first window
+    # Bring all windows to front and focus the first one
+    for addr in "${EXISTING_WINDOWS[@]}"; do
+        hyprctl dispatch bringactivetotop "address:$addr"
+    done
     if [ ${#EXISTING_WINDOWS[@]} -gt 0 ]; then
         hyprctl dispatch focuswindow "address:${EXISTING_WINDOWS[0]}"
-        hyprctl dispatch bringactivetotop
     fi
     
 else
@@ -137,10 +139,12 @@ else
         hyprctl dispatch movetoworkspace "$CURRENT_WS,address:$addr"
     done
     
-    # Focus the first window
+    # Bring all windows to front and focus the first one
+    for addr in "${EXISTING_WINDOWS[@]}"; do
+        hyprctl dispatch bringactivetotop "address:$addr"
+    done
     if [ ${#EXISTING_WINDOWS[@]} -gt 0 ]; then
         hyprctl dispatch focuswindow "address:${EXISTING_WINDOWS[0]}"
-        hyprctl dispatch bringactivetotop
     fi
 fi
 
