@@ -1,0 +1,12 @@
+# Temporary files
+*.tmp
+*.swp
+*~
+
+# Backup files
+*.bak
+*.backup
+
+# Test configs
+test/
+*.test.json

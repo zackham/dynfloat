@@ -1,0 +1,52 @@
+#!/bin/bash
+
+CONFIG_DIR="$HOME/.config/hypr/scratchpads"
+
+# Hide all scratchpad windows across all slots (0-19)
+HIDDEN_COUNT=0
+
+for i in {0..19}; do
+    SLOT_FILE="$CONFIG_DIR/slot_$i.json"
+    
+    if [ -f "$SLOT_FILE" ]; then
+        # New format with windows array
+        WINDOWS=$(jq -r '.windows // []' "$SLOT_FILE" 2>/dev/null)
+        
+        if [ -n "$WINDOWS" ] && [ "$WINDOWS" != "[]" ]; then
+            WINDOW_COUNT=$(echo "$WINDOWS" | jq 'length')
+            
+            for j in $(seq 0 $((WINDOW_COUNT - 1))); do
+                WINDOW_ENTRY=$(echo "$WINDOWS" | jq ".[$j]")
+                WINDOW_ADDRESS=$(echo "$WINDOW_ENTRY" | jq -r '.address')
+                
+                # Check if window still exists
+                WINDOW_EXISTS=$(hyprctl clients -j | jq --arg addr "$WINDOW_ADDRESS" '.[] | select(.address == $addr)')
+                
+                if [ -n "$WINDOW_EXISTS" ]; then
+                    # Check if window has grouped windows
+                    IS_GROUPED=$(echo "$WINDOW_ENTRY" | jq -r 'has("grouped")')
+                    
+                    if [ "$IS_GROUPED" = "true" ]; then
+                        # Hide all windows in group
+                        GROUP_ADDRESSES=$(echo "$WINDOW_ENTRY" | jq -r '.grouped[]')
+                        for group_addr in $GROUP_ADDRESSES; do
+                            hyprctl dispatch movetoworkspacesilent "special:minimize,address:$group_addr"
+                            ((HIDDEN_COUNT++))
+                        done
+                    else
+                        # Hide single window
+                        hyprctl dispatch movetoworkspacesilent "special:minimize,address:$WINDOW_ADDRESS"
+                        ((HIDDEN_COUNT++))
+                    fi
+                fi
+            done
+        fi
+    fi
+done
+
+if [ $HIDDEN_COUNT -gt 0 ]; then
+    echo "Hidden $HIDDEN_COUNT scratchpad window(s)"
+    notify-send "Scratchpad" "Hidden all $HIDDEN_COUNT window(s)"
+else
+    echo "No scratchpad windows to hide"
+fi

@@ -1,0 +1,106 @@
+#!/bin/bash
+
+# Get the slot number from the argument
+SLOT=$1
+
+if [ -z "$SLOT" ]; then
+    echo "Error: No slot number provided"
+    exit 1
+fi
+
+# Config directory for storing window assignments
+CONFIG_DIR="$HOME/.config/hypr/scratchpads"
+mkdir -p "$CONFIG_DIR"
+
+# Get the currently focused window
+WINDOW_INFO=$(hyprctl activewindow -j)
+WINDOW_ADDRESS=$(echo "$WINDOW_INFO" | jq -r '.address')
+WINDOW_CLASS=$(echo "$WINDOW_INFO" | jq -r '.class')
+WINDOW_TITLE=$(echo "$WINDOW_INFO" | jq -r '.title')
+WINDOW_PID=$(echo "$WINDOW_INFO" | jq -r '.pid')
+WINDOW_INITIAL_CLASS=$(echo "$WINDOW_INFO" | jq -r '.initialClass')
+WINDOW_GROUPED=$(echo "$WINDOW_INFO" | jq -r '.grouped | length')
+
+if [ "$WINDOW_ADDRESS" = "null" ] || [ -z "$WINDOW_ADDRESS" ]; then
+    notify-send "Scratchpad" "No window focused to assign to slot $SLOT"
+    exit 1
+fi
+
+SLOT_FILE="$CONFIG_DIR/slot_$SLOT.json"
+
+# Check if slot file exists and load existing windows
+if [ -f "$SLOT_FILE" ]; then
+    # Load existing windows array
+    EXISTING_WINDOWS=$(jq -r '.windows' "$SLOT_FILE")
+    
+    # Check if current window is already in the set
+    IS_IN_SET=$(echo "$EXISTING_WINDOWS" | jq --arg addr "$WINDOW_ADDRESS" 'map(select(.address == $addr)) | length > 0')
+    
+    if [ "$IS_IN_SET" = "true" ]; then
+        # Window is in set, remove it
+        NEW_WINDOWS=$(echo "$EXISTING_WINDOWS" | jq --arg addr "$WINDOW_ADDRESS" 'map(select(.address != $addr))')
+        
+        # Check if set is now empty
+        WINDOW_COUNT=$(echo "$NEW_WINDOWS" | jq 'length')
+        if [ "$WINDOW_COUNT" -eq 0 ]; then
+            # Remove the slot file if no windows left
+            rm -f "$SLOT_FILE"
+            notify-send "Scratchpad" "Removed '$WINDOW_TITLE' from slot $SLOT (now empty)"
+            echo "Removed window '$WINDOW_TITLE' from slot $SLOT (slot now empty)"
+        else
+            # Update slot file with remaining windows
+            echo "{
+              \"windows\": $NEW_WINDOWS
+            }" > "$SLOT_FILE"
+            notify-send "Scratchpad" "Removed '$WINDOW_TITLE' from slot $SLOT ($WINDOW_COUNT remaining)"
+            echo "Removed window '$WINDOW_TITLE' from slot $SLOT ($WINDOW_COUNT windows remaining)"
+        fi
+    else
+        # Window not in set, add it
+        NEW_WINDOW_ENTRY="{
+          \"address\": \"$WINDOW_ADDRESS\",
+          \"class\": \"$WINDOW_CLASS\",
+          \"title\": \"$WINDOW_TITLE\",
+          \"pid\": $WINDOW_PID,
+          \"initialClass\": \"$WINDOW_INITIAL_CLASS\"
+        }"
+        
+        # Handle groups if window is grouped
+        if [ "$WINDOW_GROUPED" -gt 0 ]; then
+            GROUP_ADDRESSES=$(echo "$WINDOW_INFO" | jq '.grouped')
+            NEW_WINDOW_ENTRY=$(echo "$NEW_WINDOW_ENTRY" | jq --argjson group "$GROUP_ADDRESSES" '. + {grouped: $group}')
+        fi
+        
+        NEW_WINDOWS=$(echo "$EXISTING_WINDOWS" | jq --argjson new "$NEW_WINDOW_ENTRY" '. + [$new]')
+        WINDOW_COUNT=$(echo "$NEW_WINDOWS" | jq 'length')
+        
+        echo "{
+          \"windows\": $NEW_WINDOWS
+        }" > "$SLOT_FILE"
+        
+        notify-send "Scratchpad" "Added '$WINDOW_TITLE' to slot $SLOT ($WINDOW_COUNT total)"
+        echo "Added window '$WINDOW_TITLE' to slot $SLOT ($WINDOW_COUNT windows total)"
+    fi
+else
+    # No existing slot file, create new with single window
+    NEW_WINDOW_ENTRY="{
+      \"address\": \"$WINDOW_ADDRESS\",
+      \"class\": \"$WINDOW_CLASS\",
+      \"title\": \"$WINDOW_TITLE\",
+      \"pid\": $WINDOW_PID,
+      \"initialClass\": \"$WINDOW_INITIAL_CLASS\"
+    }"
+    
+    # Handle groups if window is grouped
+    if [ "$WINDOW_GROUPED" -gt 0 ]; then
+        GROUP_ADDRESSES=$(echo "$WINDOW_INFO" | jq '.grouped')
+        NEW_WINDOW_ENTRY=$(echo "$NEW_WINDOW_ENTRY" | jq --argjson group "$GROUP_ADDRESSES" '. + {grouped: $group}')
+    fi
+    
+    echo "{
+      \"windows\": [$NEW_WINDOW_ENTRY]
+    }" > "$SLOT_FILE"
+    
+    notify-send "Scratchpad" "Assigned '$WINDOW_TITLE' to slot $SLOT"
+    echo "Assigned window '$WINDOW_TITLE' to slot $SLOT"
+fi

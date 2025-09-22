@@ -1,0 +1,159 @@
+#!/bin/bash
+
+# Get the slot number from the argument
+SLOT=$1
+
+if [ -z "$SLOT" ]; then
+    echo "Error: No slot number provided"
+    exit 1
+fi
+
+CONFIG_DIR="$HOME/.config/hypr/scratchpads"
+SLOT_FILE="$CONFIG_DIR/slot_$SLOT.json"
+
+# Check if this slot has an assignment
+if [ ! -f "$SLOT_FILE" ]; then
+    notify-send "Scratchpad" "No windows assigned to slot $SLOT"
+    exit 1
+fi
+
+# Read the saved windows
+WINDOWS=$(jq -r '.windows' "$SLOT_FILE")
+WINDOW_COUNT=$(echo "$WINDOWS" | jq 'length')
+
+if [ "$WINDOW_COUNT" -eq 0 ]; then
+    rm -f "$SLOT_FILE"
+    notify-send "Scratchpad" "Slot $SLOT is empty"
+    exit 1
+fi
+
+# Get current workspace
+CURRENT_WS=$(hyprctl activeworkspace -j | jq -r '.id')
+
+# Track which windows exist and their states
+EXISTING_WINDOWS=()
+HIDDEN_WINDOWS=()
+VISIBLE_ON_CURRENT_WS=()
+VISIBLE_ON_OTHER_WS=()
+
+# Check each window in the set
+for i in $(seq 0 $((WINDOW_COUNT - 1))); do
+    WINDOW_ENTRY=$(echo "$WINDOWS" | jq ".[$i]")
+    WINDOW_ADDRESS=$(echo "$WINDOW_ENTRY" | jq -r '.address')
+    IS_GROUPED=$(echo "$WINDOW_ENTRY" | jq -r 'has("grouped")')
+    
+    # Check if window still exists
+    WINDOW_INFO=$(hyprctl clients -j | jq --arg addr "$WINDOW_ADDRESS" '.[] | select(.address == $addr)')
+    
+    if [ -n "$WINDOW_INFO" ]; then
+        # Window exists
+        EXISTING_WINDOWS+=("$WINDOW_ADDRESS")
+        WORKSPACE=$(echo "$WINDOW_INFO" | jq -r '.workspace.name')
+        WINDOW_WS_ID=$(echo "$WINDOW_INFO" | jq -r '.workspace.id')
+        
+        if [ "$WORKSPACE" = "special:minimize" ]; then
+            HIDDEN_WINDOWS+=("$WINDOW_ADDRESS")
+            
+            # If it's grouped, add all group members to hidden
+            if [ "$IS_GROUPED" = "true" ]; then
+                GROUP_ADDRESSES=$(echo "$WINDOW_ENTRY" | jq -r '.grouped[]')
+                for group_addr in $GROUP_ADDRESSES; do
+                    if [ "$group_addr" != "$WINDOW_ADDRESS" ]; then
+                        HIDDEN_WINDOWS+=("$group_addr")
+                    fi
+                done
+            fi
+        elif [ "$WINDOW_WS_ID" = "$CURRENT_WS" ]; then
+            VISIBLE_ON_CURRENT_WS+=("$WINDOW_ADDRESS")
+            
+            # If it's grouped, add all group members to visible on current
+            if [ "$IS_GROUPED" = "true" ]; then
+                GROUP_ADDRESSES=$(echo "$WINDOW_ENTRY" | jq -r '.grouped[]')
+                for group_addr in $GROUP_ADDRESSES; do
+                    if [ "$group_addr" != "$WINDOW_ADDRESS" ]; then
+                        VISIBLE_ON_CURRENT_WS+=("$group_addr")
+                    fi
+                done
+            fi
+        else
+            VISIBLE_ON_OTHER_WS+=("$WINDOW_ADDRESS")
+            
+            # If it's grouped, add all group members to visible on other
+            if [ "$IS_GROUPED" = "true" ]; then
+                GROUP_ADDRESSES=$(echo "$WINDOW_ENTRY" | jq -r '.grouped[]')
+                for group_addr in $GROUP_ADDRESSES; do
+                    if [ "$group_addr" != "$WINDOW_ADDRESS" ]; then
+                        VISIBLE_ON_OTHER_WS+=("$group_addr")
+                    fi
+                done
+            fi
+        fi
+    fi
+done
+
+# Clean up slot file if no windows exist anymore
+if [ ${#EXISTING_WINDOWS[@]} -eq 0 ]; then
+    rm -f "$SLOT_FILE"
+    notify-send "Scratchpad" "All windows for slot $SLOT were closed - binding cleared"
+    exit 0
+fi
+
+# Determine action based on window states
+# Priority: 
+# 1. If ANY windows are visible on current workspace -> hide ALL
+# 2. Else if ANY windows are hidden -> show ALL
+# 3. Else (all on other workspaces) -> bring ALL to current workspace
+
+if [ ${#VISIBLE_ON_CURRENT_WS[@]} -gt 0 ]; then
+    # Some windows visible on current workspace - hide all windows
+    echo "Hiding ${#EXISTING_WINDOWS[@]} window(s) to slot $SLOT"
+    
+    # Hide all existing windows from the set
+    for addr in "${EXISTING_WINDOWS[@]}"; do
+        hyprctl dispatch movetoworkspacesilent "special:minimize,address:$addr"
+    done
+    
+elif [ ${#HIDDEN_WINDOWS[@]} -gt 0 ]; then
+    # Some windows are hidden - show all windows
+    echo "Showing ${#EXISTING_WINDOWS[@]} window(s) from slot $SLOT"
+    
+    # Show all existing windows from the set
+    for addr in "${EXISTING_WINDOWS[@]}"; do
+        hyprctl dispatch movetoworkspace "$CURRENT_WS,address:$addr"
+    done
+    
+    # Focus the first window
+    if [ ${#EXISTING_WINDOWS[@]} -gt 0 ]; then
+        hyprctl dispatch focuswindow "address:${EXISTING_WINDOWS[0]}"
+        hyprctl dispatch bringactivetotop
+    fi
+    
+else
+    # All windows on other workspaces - bring them to current
+    echo "Moving ${#EXISTING_WINDOWS[@]} window(s) from other workspaces to current"
+    
+    # Move all existing windows to current workspace
+    for addr in "${EXISTING_WINDOWS[@]}"; do
+        hyprctl dispatch movetoworkspace "$CURRENT_WS,address:$addr"
+    done
+    
+    # Focus the first window
+    if [ ${#EXISTING_WINDOWS[@]} -gt 0 ]; then
+        hyprctl dispatch focuswindow "address:${EXISTING_WINDOWS[0]}"
+        hyprctl dispatch bringactivetotop
+    fi
+fi
+
+# Update slot file to remove any non-existing windows
+if [ ${#EXISTING_WINDOWS[@]} -lt "$WINDOW_COUNT" ]; then
+    # Some windows were closed, update the slot file
+    NEW_WINDOWS="[]"
+    for addr in "${EXISTING_WINDOWS[@]}"; do
+        WINDOW_ENTRY=$(echo "$WINDOWS" | jq --arg addr "$addr" '.[] | select(.address == $addr)')
+        NEW_WINDOWS=$(echo "$NEW_WINDOWS" | jq --argjson entry "$WINDOW_ENTRY" '. + [$entry]')
+    done
+    
+    echo "{
+      \"windows\": $NEW_WINDOWS
+    }" > "$SLOT_FILE"
+fi
